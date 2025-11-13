@@ -39,6 +39,7 @@
 #if defined(TARGET_STM32G4)
 #include "fw/fdcan.h"
 #include "fw/fdcan_micro_server.h"
+#include "fw/uart_fdcanusb_micro_server.h"
 #include "fw/stm32g4_async_uart.h"
 #include "fw/stm32g4_flash.h"
 #else
@@ -235,6 +236,22 @@ int main(void) {
         return options;
       }());
 
+  // Optionally expose protocol over UART using fdcanusb ASCII for GUI/CLI.
+#if defined(MOTEUS_ENABLE_UART_FDCANUSB)
+  std::optional<FdcanusbAsciiMicroServer> uart_fdcanusb_server;
+  std::optional<mjlib::multiplex::MicroServer> uart_fdcanusb_multiplex;
+  if (rs485) {
+    uart_fdcanusb_server.emplace(&*rs485);
+    uart_fdcanusb_multiplex.emplace(
+        &pool, &*uart_fdcanusb_server,
+        []() {
+          multiplex::MicroServer::Options options;
+          options.max_tunnel_streams = 3;
+          return options;
+        }());
+  }
+#endif
+
   micro::AsyncStream* serial = multiplex_protocol.MakeTunnel(1);
 
   micro::AsyncExclusive<micro::AsyncWriteStream> write_stream(serial);
@@ -321,6 +338,12 @@ int main(void) {
         fdcan.ConfigureFilters(filter_config);
 
         fdcan_micro_server.SetPrefix(can_config.prefix);
+
+#if defined(MOTEUS_ENABLE_UART_FDCANUSB)
+        if (uart_fdcanusb_server) {
+          uart_fdcanusb_server->SetPrefix(can_config.prefix);
+        }
+#endif
       };
 
   persistent_config.Register("id", multiplex_protocol.config(), maybe_update_filters);
@@ -332,6 +355,11 @@ int main(void) {
   moteus_controller.Start();
   command_manager.AsyncStart();
   multiplex_protocol.Start(moteus_controller.multiplex_server());
+#if defined(MOTEUS_ENABLE_UART_FDCANUSB)
+  if (uart_fdcanusb_multiplex) {
+    uart_fdcanusb_multiplex->Start(moteus_controller.multiplex_server());
+  }
+#endif
 
   auto old_time = timer.read_us();
 
@@ -342,6 +370,14 @@ int main(void) {
 #if defined(TARGET_STM32G4)
     fdcan_micro_server.Poll();
 #endif
+
+    // Poll the ASCII fdcanusb server if enabled.
+#if defined(MOTEUS_ENABLE_UART_FDCANUSB)
+    if (uart_fdcanusb_server) {
+      uart_fdcanusb_server->Poll();
+    }
+#endif
+
     moteus_controller.Poll();
     multiplex_protocol.Poll();
 
