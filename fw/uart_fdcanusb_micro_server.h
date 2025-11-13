@@ -110,9 +110,7 @@ class FdcanusbAsciiMicroServer : public mjlib::multiplex::MicroDatagramServer {
     *p++ = '\n';
 
     const std::string_view out(tx_buf_, p - tx_buf_);
-    stream_->AsyncWriteSome(out, [callback,out](mjlib::micro::error_code) {
-      callback(mjlib::micro::error_code(), out.size());
-    });
+    stream_->AsyncWriteSome(out, callback);
   }
 
   Properties properties() const override {
@@ -246,8 +244,8 @@ class FdcanusbAsciiMicroServer : public mjlib::multiplex::MicroDatagramServer {
           | (fd ? kFdcanFlag : 0);
 
     // Copy bytes into the provided read span.
-      const size_t to_copy = (payload_len < current_read_data_.size()) ?
-          payload_len : current_read_data_.size();
+      const size_t to_copy = (payload_len < static_cast<size_t>(current_read_data_.size())) ?
+          payload_len : static_cast<size_t>(current_read_data_.size());
       std::memcpy(current_read_data_.data(), payload, to_copy);
 
       auto cb = current_read_callback_;
@@ -261,7 +259,7 @@ class FdcanusbAsciiMicroServer : public mjlib::multiplex::MicroDatagramServer {
     // Respond with OK\n
     static constexpr char kOk[] = "OK\n";
     stream_->AsyncWriteSome(std::string_view(kOk, sizeof(kOk) - 1),
-                            [](mjlib::micro::error_code) {});
+                            [](const mjlib::micro::error_code&, int) {});
   }
 
   void Consume(size_t n) {

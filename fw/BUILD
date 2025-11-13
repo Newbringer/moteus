@@ -174,10 +174,9 @@ g4_mbed_binary(
     deps = MOTEUS_DEPS,
     linker_script = "stm32g474.ld",
     features = ["speedopt"],
-    copts = COPTS + select({
-        ":enable_uart_fdcanusb": ["-DMOTEUS_ENABLE_UART_FDCANUSB"],
-        "//conditions:default": [],
-    }),
+    copts = COPTS + [
+        "-DMOTEUS_ENABLE_UART_FDCANUSB",
+    ],
 )
 
 genrule(

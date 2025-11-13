@@ -294,7 +294,7 @@ int main(void) {
 
   const auto maybe_update_filters =
       [&can_config, &fdcan, &fdcan_micro_server, &old_can_config,
-       &old_multiplex_id, &multiplex_protocol]() {
+       &old_multiplex_id, &multiplex_protocol, &uart_fdcanusb_server]() {
         // We only update our config if it has actually changed.
         // Re-initializing the CAN-FD controller can cause packets to
         // be lost, so don't do it unless actually necessary.
