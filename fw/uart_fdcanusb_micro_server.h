@@ -120,12 +120,25 @@ class FdcanusbAsciiMicroServer : public mjlib::multiplex::MicroDatagramServer {
   }
 
   void Poll() {
+    // Send pending OK if no write is in flight
+    if (pending_ok_ && !write_active_) {
+      pending_ok_ = false;
+      write_active_ = true;
+      static constexpr char kOk[] = "OK\n";
+      stream_->AsyncWriteSome(std::string_view(kOk, sizeof(kOk) - 1),
+                              [this](const mjlib::micro::error_code&, int) {
+        write_active_ = false;
+      });
+    }
+
     // Keep a read in flight.
     if (!read_active_) {
       read_active_ = true;
       stream_->AsyncReadSome(mjlib::base::string_span(rx_buf_),
                              [this](mjlib::micro::error_code ec, size_t size) {
-        if (!ec && size > 0) { AppendRx(rx_buf_, size); }
+        if (!ec && size > 0) { 
+          AppendRx(rx_buf_, size); 
+        }
         read_active_ = false;
       });
     }
@@ -194,7 +207,11 @@ class FdcanusbAsciiMicroServer : public mjlib::multiplex::MicroDatagramServer {
     Consume(line_size + 1);
 
     // Expected: "can send <id> <hex> [flags]"
-    if (std::strncmp(tmp, "can send ", 9) != 0) {
+    // Echo removed to avoid write collisions
+    // Be permissive: still acknowledge unknown lines with "OK" so host tools don't stall.
+    const bool is_can_send = (std::strncmp(tmp, "can send ", 9) == 0);
+    if (!is_can_send) {
+      pending_ok_ = true;
       return;
     }
     const char* p = tmp + 9;
@@ -253,13 +270,11 @@ class FdcanusbAsciiMicroServer : public mjlib::multiplex::MicroDatagramServer {
       current_read_header_ = {};
       current_read_data_ = {};
 
-      cb(mjlib::micro::error_code(), payload_len);
+      cb(mjlib::micro::error_code(), to_copy);
     }
 
-    // Respond with OK\n
-    static constexpr char kOk[] = "OK\n";
-    stream_->AsyncWriteSome(std::string_view(kOk, sizeof(kOk) - 1),
-                            [](const mjlib::micro::error_code&, int) {});
+    // Queue OK response (will be sent when write is available)
+    pending_ok_ = true;
   }
 
   void Consume(size_t n) {
@@ -290,6 +305,10 @@ class FdcanusbAsciiMicroServer : public mjlib::multiplex::MicroDatagramServer {
 
   // Transmit buffer (single line).
   char tx_buf_[256] = {};
+  
+  // Async write state
+  bool write_active_ = false;
+  bool pending_ok_ = false;
 };
 
 }  // namespace moteus

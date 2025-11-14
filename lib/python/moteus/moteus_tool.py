@@ -21,8 +21,10 @@ import asyncio
 import collections
 import collections.abc
 import datetime
-import elftools
-import elftools.elf.elffile
+try:
+    import elftools.elf.elffile as _elf_elffile
+except Exception:
+    _elf_elffile = None
 import json
 import io
 import math
@@ -729,7 +731,9 @@ class ElfData:
 
 
 def _read_elf(filename, sections):
-    fp = elftools.elf.elffile.ELFFile(open(filename, "rb"))
+    if _elf_elffile is None:
+        raise RuntimeError("ELF parsing requires pyelftools, which is not available in-repo. Use OpenOCD/st-flash for .bin flashing, or install pyelftools only if you need --flash.")
+    fp = _elf_elffile.ELFFile(open(filename, "rb"))
 
     mappings = ElfMappings(fp)
 

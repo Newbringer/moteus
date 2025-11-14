@@ -1,0 +1,39 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "moteus Debug (OpenOCD)",
+      "type": "cortex-debug",
+      "request": "launch",
+      "cwd": "${workspaceFolder}",
+      "executable": "${workspaceFolder}/out/moteus.elf",
+      "servertype": "openocd",
+      "device": "STM32G474RE",
+      "gdbPath": "gdb-multiarch",
+      "armToolchainPath": "/usr/bin",
+      "configFiles": [
+        "interface/stlink.cfg",
+        "target/stm32g4x.cfg"
+      ],
+      "searchDir": [],
+      "runToEntryPoint": "main",
+      "showDevDebugOutput": "parsed"
+    },
+    {
+      "name": "moteus Attach (no reset)",
+      "type": "cortex-debug",
+      "request": "attach",
+      "cwd": "${workspaceFolder}",
+      "executable": "${workspaceFolder}/out/moteus.elf",
+      "servertype": "openocd",
+      "device": "STM32G474RE",
+      "configFiles": [
+        "interface/stlink.cfg",
+        "target/stm32g4x.cfg"
+      ],
+      "searchDir": [],
+      "showDevDebugOutput": "parsed"
+    }
+  ]
+}
+

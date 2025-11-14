@@ -191,19 +191,24 @@ int main(void) {
   // Turn on our power light.
   DigitalOut power_led(g_hw_pins.power_led, 0);
 
-  micro::SizedPool<20000> pool;
-
+  micro::SizedPool<24000> pool;
   std::optional<HardwareUart> rs485;
   if (g_hw_pins.uart_tx != NC) {
     rs485.emplace(&pool, &timer, []() {
       HardwareUart::Options options;
       options.tx = g_hw_pins.uart_tx;
       options.rx = g_hw_pins.uart_rx;
+#if defined(MOTEUS_ENABLE_UART_PROTOCOL)
+      options.dir = NC;         // TTL mode (no RS485 dir pin)
+      options.baud_rate = 460800;
+#else
       options.dir = g_hw_pins.uart_dir;
       options.baud_rate = 3000000;
+#endif
       return options;
                                  }());
   }
+
 
   FDCan fdcan([]() {
       FDCan::Options options;
@@ -236,8 +241,7 @@ int main(void) {
         return options;
       }());
 
-  // Optionally expose protocol over UART using fdcanusb ASCII for GUI/CLI.
-#if defined(MOTEUS_ENABLE_UART_FDCANUSB)
+#if defined(MOTEUS_ENABLE_UART_PROTOCOL)
   std::optional<FdcanusbAsciiMicroServer> uart_fdcanusb_server;
   std::optional<mjlib::multiplex::MicroServer> uart_fdcanusb_multiplex;
   if (rs485) {
@@ -245,10 +249,11 @@ int main(void) {
     uart_fdcanusb_multiplex.emplace(
         &pool, &*uart_fdcanusb_server,
         []() {
-          multiplex::MicroServer::Options options;
-          options.max_tunnel_streams = 3;
-          return options;
+          mjlib::multiplex::MicroServer::Options o;
+          o.max_tunnel_streams = 3;
+          return o;
         }());
+    uart_fdcanusb_server->Poll();
   }
 #endif
 
@@ -339,7 +344,7 @@ int main(void) {
 
         fdcan_micro_server.SetPrefix(can_config.prefix);
 
-#if defined(MOTEUS_ENABLE_UART_FDCANUSB)
+#if defined(MOTEUS_ENABLE_UART_PROTOCOL)
         if (uart_fdcanusb_server) {
           uart_fdcanusb_server->SetPrefix(can_config.prefix);
         }
@@ -355,7 +360,7 @@ int main(void) {
   moteus_controller.Start();
   command_manager.AsyncStart();
   multiplex_protocol.Start(moteus_controller.multiplex_server());
-#if defined(MOTEUS_ENABLE_UART_FDCANUSB)
+#if defined(MOTEUS_ENABLE_UART_PROTOCOL)
   if (uart_fdcanusb_multiplex) {
     uart_fdcanusb_multiplex->Start(moteus_controller.multiplex_server());
   }
@@ -371,10 +376,12 @@ int main(void) {
     fdcan_micro_server.Poll();
 #endif
 
-    // Poll the ASCII fdcanusb server if enabled.
-#if defined(MOTEUS_ENABLE_UART_FDCANUSB)
+#if defined(MOTEUS_ENABLE_UART_PROTOCOL)
     if (uart_fdcanusb_server) {
       uart_fdcanusb_server->Poll();
+    }
+    if (uart_fdcanusb_multiplex) {
+      uart_fdcanusb_multiplex->Poll();
     }
 #endif
 

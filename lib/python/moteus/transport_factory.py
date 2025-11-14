@@ -14,7 +14,20 @@
 
 
 import argparse
-import importlib_metadata
+try:
+    # Prefer stdlib on Python 3.8+
+    from importlib.metadata import entry_points as _entry_points
+except Exception:
+    try:
+        # Fallback to backport if available
+        from importlib_metadata import entry_points as _entry_points  # type: ignore
+    except Exception:
+        # Final fallback: no entry points available
+        def _entry_points(*args, **kwargs):  # type: ignore
+            class _Empty:
+                def select(self, **_kwargs):
+                    return []
+            return _Empty()
 import sys
 import warnings
 
@@ -38,6 +51,9 @@ class FdcanusbFactory:
         parser.add_argument('--fdcanusb', type=str, action='append',
                             metavar='FILE',
                             help='path to fdcanusb device')
+        # Optional baudrate for UART/RS485 adapters emulating fdcanusb text protocol.
+        parser.add_argument('--fdcanusb-baud', type=int, metavar='BAUD',
+                            help='baudrate for serial adapter (default 3000000 for tty/COM, 9600 for real fdcanusb)')
 
     def is_args_set(self, args):
         return args and args.fdcanusb
@@ -49,6 +65,8 @@ class FdcanusbFactory:
 
         if args and args.can_debug:
             kwargs['debug_log'] = args.can_debug
+        if args and getattr(args, 'fdcanusb_baud', None):
+            kwargs['baudrate'] = args.fdcanusb_baud
 
         if args and args.fdcanusb:
             return [fdcanusb_device.FdcanusbDevice(path, **kwargs)
@@ -117,10 +135,14 @@ def get_transport_factories():
         TRANSPORT_FACTORIES.extend([
             FdcanusbFactory(),
             PythonCanFactory(),
-        ] + [ep.load()() for ep in
-             importlib_metadata.entry_points().select(
-                 group='moteus.transports2')
-             ])
+        ] + [
+            ep.load()() for ep in (
+                # Handle both modern and older entry_points APIs
+                (lambda: _entry_points().select(group='moteus.transports2'))()
+                if hasattr(_entry_points(), 'select')
+                else _entry_points(group='moteus.transports2')  # type: ignore
+            )
+        ])
 
     return TRANSPORT_FACTORIES
 
