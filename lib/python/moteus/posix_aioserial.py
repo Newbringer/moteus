@@ -96,5 +96,12 @@ class AioSerial:
         self.serial.write(to_write)
 
     def _handle_read(self):
-        self._read_data += self.serial.read(8192)
-        self._read_event.set()
+        try:
+            data = self.serial.read(8192)
+        except serial.SerialException:
+            # Treat as transient (device temporarily not ready or contended).
+            # Do not crash the loop; just skip this tick.
+            data = b''
+        if data:
+            self._read_data += data
+            self._read_event.set()

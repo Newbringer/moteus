@@ -14,6 +14,7 @@
 
 #pragma once
 
+#include <algorithm>
 #include <cstring>
 #include <cstdio>
 #include <cctype>
@@ -53,7 +54,10 @@ class FdcanusbAsciiMicroServer : public mjlib::multiplex::MicroDatagramServer {
   void AsyncRead(Header* header,
                  const mjlib::base::string_span& data,
                  const mjlib::micro::SizeCallback& callback) override {
-    MJ_ASSERT(!current_read_callback_);
+    // Complete any pending read before starting a new one
+    if (current_read_callback_) {
+      current_read_callback_(mjlib::micro::error_code(), 0);
+    }
     current_read_header_ = header;
     current_read_data_ = data;
     current_read_callback_ = callback;
@@ -63,87 +67,68 @@ class FdcanusbAsciiMicroServer : public mjlib::multiplex::MicroDatagramServer {
                   const std::string_view& data,
                   const Header& query_header,
                   const mjlib::micro::SizeCallback& callback) override {
-    // Convert to: "rcv %x HEX [E] [B] [F]\n"
-    const uint32_t id =
-        ((header.source & 0xff) << 8) |
-        (header.destination & 0xff) |
-        (can_prefix_ << 16);
+    // Build CAN ID: prefix | source | destination
+    const uint32_t id = (can_prefix_ << 16) | 
+                        ((header.source & 0xff) << 8) | 
+                        (header.destination & 0xff);
 
-    const bool brs =
-        (query_header.flags & kBrsFlag) != 0;
-    const bool fd =
-        // If the query requested classic frame and <= 8 bytes, we
-        // will not mark FD.
-        !((query_header.flags & kFdcanFlag) == 0 && data.size() <= 8);
+    // Determine flags
+    const bool brs = (query_header.flags & kBrsFlag) != 0;
+    const bool fd = !((query_header.flags & kFdcanFlag) == 0 && data.size() <= 8);
+    const size_t padded_len = RoundUpDlc(data.size());
 
-    const size_t on_wire = RoundUpDlc(data.size());
-
-    // Ensure we have space.
-    const size_t max_hex = on_wire * 2;
-    const size_t needed = 4 /*rcv */ + 1 /*space*/ + 8 /*id*/ + 1 /*space*/
-        + max_hex + 1 /*space*/ + 3 /*flags*/ + 2 /*\r\n*/ + 16 /*margin*/;
-    if (needed > sizeof(tx_buf_)) {
-      // Should never happen.
-      callback(mjlib::micro::error_code(), 0);
-      return;
-    }
-
-    char* p = tx_buf_;
+    // Format: "rcv <id> <hex_payload> E [B] [F]\r\n" into dedicated buffer
+    char* p = rcv_buf_;
     p += std::sprintf(p, "rcv %x ", static_cast<unsigned int>(id));
 
-    // Hex encode payload, padding with 0x50 as required.
-    size_t i = 0;
-    for (; i < data.size(); i++) {
-      const uint8_t v = static_cast<uint8_t>(data[i]);
-      p += std::sprintf(p, "%02X", static_cast<unsigned int>(v));
-    }
-    for (; i < on_wire; i++) {
-      p += std::sprintf(p, "%02X", 0x50u);
+    // Hex-encode payload with padding
+    for (size_t i = 0; i < padded_len; i++) {
+      const uint8_t byte = (i < data.size()) ? static_cast<uint8_t>(data[i]) : 0x50;
+      p += std::sprintf(p, "%02X", static_cast<unsigned int>(byte));
     }
 
-    // Flags: E (if extended), B (if brs), F (if fd)
-    // For moteus arbitration IDs with prefix, 'extended' is always true.
-    *p++ = ' ';
-    *p++ = 'E';
+    // Append flags
+    *p++ = ' '; *p++ = 'E';
     if (brs) { *p++ = ' '; *p++ = 'B'; }
     if (fd)  { *p++ = ' '; *p++ = 'F'; }
-    *p++ = '\n';
+    *p++ = '\r'; *p++ = '\n';
 
-    const std::string_view out(tx_buf_, p - tx_buf_);
-    stream_->AsyncWriteSome(out, callback);
+    rcv_len_ = p - rcv_buf_;  // Mark as ready to send
+    if (callback) { callback(mjlib::micro::error_code(), data.size()); }
   }
 
   Properties properties() const override {
-    Properties out;
-    out.max_size = 64;
-    return out;
+    return Properties{.max_size = 64};
   }
 
   void Poll() {
-    // Send pending OK if no write is in flight
-    if (pending_ok_ && !write_active_) {
-      pending_ok_ = false;
-      write_active_ = true;
-      static constexpr char kOk[] = "OK\n";
-      stream_->AsyncWriteSome(std::string_view(kOk, sizeof(kOk) - 1),
-                              [this](const mjlib::micro::error_code&, int) {
-        write_active_ = false;
-      });
+    // Send pending writes (OK has priority, then rcv response)
+    auto write_done = [this](const mjlib::micro::error_code&, int) { write_active_ = false; };
+    
+    if (!write_active_) {
+      if (pending_ok_) {
+        pending_ok_ = false;
+        write_active_ = true;
+        static constexpr char kOk[] = "OK\r\n";
+        stream_->AsyncWriteSome(std::string_view(kOk, sizeof(kOk) - 1), write_done);
+      } else if (rcv_len_ > 0) {
+        write_active_ = true;
+        stream_->AsyncWriteSome(std::string_view(rcv_buf_, rcv_len_), write_done);
+        rcv_len_ = 0;
+      }
     }
 
-    // Keep a read in flight.
+    // Keep async read active
     if (!read_active_) {
       read_active_ = true;
       stream_->AsyncReadSome(mjlib::base::string_span(rx_buf_),
                              [this](mjlib::micro::error_code ec, size_t size) {
-        if (!ec && size > 0) { 
-          AppendRx(rx_buf_, size); 
-        }
+        if (!ec && size > 0) { AppendRx(rx_buf_, size); }
         read_active_ = false;
       });
     }
 
-    // Process complete lines, one at a time.
+    // Process all complete lines
     while (true) {
       const int newline = FindNewline();
       if (newline < 0) { break; }
@@ -152,29 +137,27 @@ class FdcanusbAsciiMicroServer : public mjlib::multiplex::MicroDatagramServer {
   }
 
  private:
-  static size_t RoundUpDlc(size_t value) {
-    if (value <= 8) { return value; }
-    if (value <= 12) { return 12; }
-    if (value <= 16) { return 16; }
-    if (value <= 20) { return 20; }
-    if (value <= 24) { return 24; }
-    if (value <= 32) { return 32; }
-    if (value <= 48) { return 48; }
-    if (value <= 64) { return 64; }
-    return value;
+  static constexpr uint8_t HexToNibble(char c) {
+    return (c >= '0' && c <= '9') ? (c - '0') :
+           (c >= 'a' && c <= 'f') ? (c - 'a' + 10) :
+           (c >= 'A' && c <= 'F') ? (c - 'A' + 10) : 0;
+  }
+
+  static constexpr size_t RoundUpDlc(size_t value) {
+    return (value <= 8) ? value :
+           (value <= 12) ? 12 :
+           (value <= 16) ? 16 :
+           (value <= 20) ? 20 :
+           (value <= 24) ? 24 :
+           (value <= 32) ? 32 :
+           (value <= 48) ? 48 : 64;
   }
 
   void AppendRx(const char* data, size_t size) {
-    size_t to_copy = size;
-    if (to_copy > (sizeof(line_buf_) - line_len_)) {
-      to_copy = sizeof(line_buf_) - line_len_;
-    }
+    const size_t to_copy = std::min(size, sizeof(line_buf_) - line_len_);
     std::memcpy(line_buf_ + line_len_, data, to_copy);
     line_len_ += to_copy;
-    // Drop extra if we overflow.
-    if (line_len_ == sizeof(line_buf_)) {
-      line_len_ = 0;
-    }
+    if (line_len_ >= sizeof(line_buf_)) { line_len_ = 0; }  // Reset if full
   }
 
   int FindNewline() const {
@@ -186,105 +169,76 @@ class FdcanusbAsciiMicroServer : public mjlib::multiplex::MicroDatagramServer {
     return -1;
   }
 
-  static bool IsSpace(char c) {
-    return c == ' ' || c == '\t' || c == '\r' || c == '\n';
-  }
-
   void HandleLine(int newline_index) {
-    // Extract the line.
-    const int line_size = newline_index;
-    if (line_size <= 0) {
-      Consume(line_size + 1);
+    if (newline_index <= 0) {
+      Consume(newline_index + 1);
       return;
     }
-    char tmp[192] = {};
-    const int copy = (line_size >= static_cast<int>(sizeof(tmp))) ?
-        (static_cast<int>(sizeof(tmp)) - 1) : line_size;
+
+    // Copy line to temporary buffer
+    char tmp[192];
+    const size_t copy = std::min(static_cast<size_t>(newline_index), sizeof(tmp) - 1);
     std::memcpy(tmp, line_buf_, copy);
     tmp[copy] = 0;
+    Consume(newline_index + 1);
 
-    // Consume the line + following newline char.
-    Consume(line_size + 1);
+    // Only process "can send" commands
+    if (std::strncmp(tmp, "can send ", 9) != 0) { return; }
 
-    // Expected: "can send <id> <hex> [flags]"
-    // Echo removed to avoid write collisions
-    // Be permissive: still acknowledge unknown lines with "OK" so host tools don't stall.
-    const bool is_can_send = (std::strncmp(tmp, "can send ", 9) == 0);
-    if (!is_can_send) {
-      pending_ok_ = true;
-      return;
-    }
+    // Parse: "can send <id> <hex> [flags]"
     const char* p = tmp + 9;
-    // Skip spaces
-    while (*p && IsSpace(*p)) { p++; }
-    // Parse hex id
-    uint32_t id = 0;
-    {
-      // strtoul handles 0x or plain hex
-      char* endp = nullptr;
-      id = static_cast<uint32_t>(std::strtoul(p, &endp, 16));
-      if (endp == p) { return; }
-      p = endp;
-    }
-    while (*p && IsSpace(*p)) { p++; }
+    while (*p == ' ' || *p == '\t') { p++; }
+
+    // Parse ID
+    char* endp = nullptr;
+    const uint32_t id = static_cast<uint32_t>(std::strtoul(p, &endp, 16));
+    if (endp == p) { return; }
+    p = endp;
+    while (*p == ' ' || *p == '\t') { p++; }
+
     // Parse hex payload
-    uint8_t payload[64] = {};
+    uint8_t payload[64];
     size_t payload_len = 0;
-    while (payload_len < sizeof(payload) && p[0] && std::isxdigit(static_cast<unsigned char>(p[0]))) {
-      if (!p[1] || !std::isxdigit(static_cast<unsigned char>(p[1]))) { break; }
-      auto hex = [](char c) -> uint8_t {
-        if (c >= '0' && c <= '9') return c - '0';
-        if (c >= 'a' && c <= 'f') return c - 'a' + 10;
-        if (c >= 'A' && c <= 'F') return c - 'A' + 10;
-        return 0;
-      };
-      payload[payload_len++] = (hex(p[0]) << 4) | hex(p[1]);
+    while (payload_len < sizeof(payload) && 
+           std::isxdigit(static_cast<unsigned char>(p[0])) &&
+           std::isxdigit(static_cast<unsigned char>(p[1]))) {
+      payload[payload_len++] = (HexToNibble(p[0]) << 4) | HexToNibble(p[1]);
       p += 2;
     }
-    // Optional flags (ignored except B/F for round-trip metadata)
+
+    // Parse optional flags (B=BRS, F=FD)
     bool brs = false;
     bool fd = (payload_len > 8);
-    while (*p) {
-      while (*p && IsSpace(*p)) { p++; }
-      if (*p == 'B') { brs = true; }
-      if (*p == 'F') { fd = true; }
-      while (*p && !IsSpace(*p)) { p++; }
+    for (; *p; p++) {
+      if (*p == 'B') brs = true;
+      else if (*p == 'F') fd = true;
     }
 
-    // Deliver to MicroServer if we have a pending read.
+    // Deliver to multiplex server if a read is pending
     if (current_read_callback_) {
       current_read_header_->destination = id & 0xff;
       current_read_header_->source = (id >> 8) & 0xff;
       current_read_header_->size = payload_len;
-      current_read_header_->flags = 0
-          | (brs ? kBrsFlag : 0)
-          | (fd ? kFdcanFlag : 0);
+      current_read_header_->flags = (brs ? kBrsFlag : 0) | (fd ? kFdcanFlag : 0);
 
-    // Copy bytes into the provided read span.
-      const size_t to_copy = (payload_len < static_cast<size_t>(current_read_data_.size())) ?
-          payload_len : static_cast<size_t>(current_read_data_.size());
+      const size_t to_copy = std::min(payload_len, static_cast<size_t>(current_read_data_.size()));
       std::memcpy(current_read_data_.data(), payload, to_copy);
 
       auto cb = current_read_callback_;
       current_read_callback_ = {};
-      current_read_header_ = {};
-      current_read_data_ = {};
-
       cb(mjlib::micro::error_code(), to_copy);
     }
 
-    // Queue OK response (will be sent when write is available)
-    pending_ok_ = true;
+    pending_ok_ = true;  // Queue "OK" acknowledgment
   }
 
   void Consume(size_t n) {
-    if (n <= 0) { return; }
-    if (static_cast<size_t>(n) >= line_len_) {
+    if (n >= line_len_) {
       line_len_ = 0;
-      return;
+    } else {
+      std::memmove(line_buf_, line_buf_ + n, line_len_ - n);
+      line_len_ -= n;
     }
-    std::memmove(line_buf_, line_buf_ + n, line_len_ - n);
-    line_len_ -= n;
   }
 
   mjlib::micro::AsyncStream* const stream_;
@@ -303,12 +257,11 @@ class FdcanusbAsciiMicroServer : public mjlib::multiplex::MicroDatagramServer {
   char line_buf_[256] = {};
   size_t line_len_ = 0;
 
-  // Transmit buffer (single line).
-  char tx_buf_[256] = {};
-  
-  // Async write state
+  // Write management: two-slot system (OK + one rcv response).
   bool write_active_ = false;
   bool pending_ok_ = false;
+  char rcv_buf_[256] = {};
+  size_t rcv_len_ = 0;
 };
 
 }  // namespace moteus

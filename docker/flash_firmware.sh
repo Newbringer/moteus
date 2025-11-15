@@ -51,7 +51,8 @@ FLASH_CMDS+="program ${BIN_APP} verify 0x08010000; "
 if [[ "${PROGRAM_OPTION_BYTES}" == "1" ]]; then
   # Clear nSWBOOT0 so BOOT0 pin is ignored; boot from main flash.
   FLASH_CMDS+="stm32l4x option_write 0 0x20 0x00000000 0x04000000; "
-  FLASH_CMDS+="stm32l4x option_load 0; "
+  # On some tool/MCU revisions option_load may fail spuriously; ignore its error.
+  FLASH_CMDS+="catch { stm32l4x option_load 0 }; "
 fi
 FLASH_CMDS+="reset run; exit"
 

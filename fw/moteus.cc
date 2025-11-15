@@ -257,7 +257,13 @@ int main(void) {
   }
 #endif
 
+#if defined(MOTEUS_ENABLE_UART_PROTOCOL)
+  // When UART protocol is enabled, use the UART multiplex server for console
+  micro::AsyncStream* serial = uart_fdcanusb_multiplex ? 
+      uart_fdcanusb_multiplex->MakeTunnel(1) : multiplex_protocol.MakeTunnel(1);
+#else
   micro::AsyncStream* serial = multiplex_protocol.MakeTunnel(1);
+#endif
 
   micro::AsyncExclusive<micro::AsyncWriteStream> write_stream(serial);
   micro::CommandManager command_manager(&pool, serial, &write_stream);
@@ -356,6 +362,9 @@ int main(void) {
   persistent_config.Register("can", &can_config, maybe_update_filters);
 
   persistent_config.Load();
+  // Ensure filters/prefix are applied at least once on boot so UART transport
+  // uses the correct CAN addressing and host tools don't hang waiting.
+  maybe_update_filters();
 
   moteus_controller.Start();
   command_manager.AsyncStart();

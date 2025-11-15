@@ -17,7 +17,8 @@
       ],
       "searchDir": [],
       "runToEntryPoint": "main",
-      "showDevDebugOutput": "parsed"
+      "showDevDebugOutput": "parsed",
+      "preLaunchTask": "build-flash"
     },
     {
       "name": "moteus Attach (no reset)",

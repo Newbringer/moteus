@@ -95,7 +95,8 @@ class FdcanusbDevice(TransportDevice):
 
         chosen_baud = baudrate if baudrate is not None else _default_baud_for_path(path)
 
-        self._serial = aioserial.AioSerial(port=path, baudrate=chosen_baud)
+        # Open port exclusively where supported to avoid multiple readers.
+        self._serial = aioserial.AioSerial(port=path, baudrate=chosen_baud, exclusive=True)
 
         # Attempt to discover the USB serial number associated with
         # this device for pretty-printing.
@@ -197,23 +198,38 @@ class FdcanusbDevice(TransportDevice):
 
     async def _readline(self, stream):
         while True:
-            offset = min((self._stream_data.find(c) for c in b"\r\n"
-                          if c in self._stream_data), default=None)
-            if offset is not None:
-                to_return, self._stream_data = (
-                    self._stream_data[0:offset+1],
-                    self._stream_data[offset+1:])
+            # Find first \r or \n
+            cr_pos = self._stream_data.find(b'\r')
+            lf_pos = self._stream_data.find(b'\n')
+            
+            # Determine the actual line boundary
+            if cr_pos >= 0 and lf_pos >= 0:
+                offset = min(cr_pos, lf_pos)
+            elif cr_pos >= 0:
+                offset = cr_pos
+            elif lf_pos >= 0:
+                offset = lf_pos
+            else:
+                offset = -1
+            
+            if offset >= 0:
+                # Extract line (include the newline char)
+                to_return = self._stream_data[0:offset+1]
+                # Skip any immediately following \r or \n (handle CRLF)
+                next_idx = offset + 1
+                if next_idx < len(self._stream_data):
+                    if self._stream_data[next_idx:next_idx+1] in (b'\r', b'\n'):
+                        next_idx += 1
+                self._stream_data = self._stream_data[next_idx:]
+                
                 if offset > 0:
                     return to_return
                 else:
+                    # Empty line, skip it
                     continue
             else:
                 data = await stream.read(8192, block=False)
                 if not data:
-                    # If for some reason we got a completely empty
-                    # response, which shouldn't happen, ensure we
-                    # yield control to somebody else so that hopefully
-                    # we eventually make forward progress.
                     await asyncio.sleep(0)
                 else:
                     self._stream_data += data
