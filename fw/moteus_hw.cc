@@ -284,6 +284,11 @@ MoteusHwPins FindHardwarePins(FamilyAndVersion fv) {
     result.vsense_adc_scale =
         (hv <= 5 ? 0.00884f : 0.017947f);
 
+    // Keep the serial-command UART transport on the dedicated family-0
+    // board pins instead of AUX auto-selection.
+    result.uart_tx = PC_10;
+    result.uart_rx = PC_11;
+
     result.drv8323_enable = PA_3;
     result.drv8323_hiz = PB_7;
     result.drv8323_cs = PC_4;
@@ -341,6 +346,9 @@ MoteusHwPins FindHardwarePins(FamilyAndVersion fv) {
     result.msense = PA_8;         // ADC5_IN1
 
     result.vsense_adc_scale = 0.017947f;
+
+    result.uart_tx = NC;
+    result.uart_rx = NC;
 
     result.as5047_cs = PB_2;
 

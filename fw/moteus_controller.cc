@@ -488,7 +488,7 @@ class MoteusController::Impl : public multiplex::MicroServer::Server {
                    multiplex_protocol->MakeTunnel(3),
                    timer,
                    AuxPort::kNoDefaultSpi,
-                   (g_measured_hw_family == 0 ||
+                   (g_hw_pins.uart_tx == NC &&
                     g_measured_hw_family == 1) ?
                    AuxPort::kDefaultUartSerial : AuxPort::kDefaultUartDisabled,
                    {DMA1_Channel8, DMA2_Channel1, DMA2_Channel2, DMA2_Channel3, DMA2_Channel4}),

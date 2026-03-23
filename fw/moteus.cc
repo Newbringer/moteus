@@ -15,6 +15,7 @@
 #include <inttypes.h>
 
 #include <functional>
+#include <optional>
 
 #include "mbed.h"
 
@@ -40,6 +41,7 @@
 #include "fw/fdcan.h"
 #include "fw/fdcan_micro_server.h"
 #include "fw/multi_transport_datagram_server.h"
+#include "fw/stm32g4_dma_uart.h"
 #include "fw/stm32g4_flash.h"
 #else
 #error "Unknown target"
@@ -57,6 +59,7 @@ namespace micro = mjlib::micro;
 namespace multiplex = mjlib::multiplex;
 
 #if defined(TARGET_STM32G4)
+using BoardUart = Stm32G4DmaUart;
 using Stm32Flash = Stm32G4Flash;
 #else
 #error "Unknown target"
@@ -190,6 +193,18 @@ int main(void) {
   DigitalOut power_led(g_hw_pins.power_led, 0);
 
   micro::SizedPool<24000> pool;
+  std::optional<BoardUart> uart_transport;
+  std::optional<UartFdcanusbMicroServer> uart_micro_server;
+  if (g_hw_pins.uart_tx != NC) {
+    uart_transport.emplace([]() {
+      BoardUart::Options options;
+      options.tx = g_hw_pins.uart_tx;
+      options.rx = g_hw_pins.uart_rx;
+      options.baud_rate = 1000000;
+      return options;
+    }());
+    uart_micro_server.emplace(&*uart_transport);
+  }
 
   FDCan fdcan([]() {
       FDCan::Options options;
@@ -216,6 +231,9 @@ int main(void) {
   FDCanMicroServer fdcan_micro_server(&fdcan);
 
   MultiTransportDatagramServer multi_transport(&fdcan_micro_server);
+  if (uart_micro_server) {
+    multi_transport.SetActiveUartServer(&*uart_micro_server);
+  }
 
   multiplex::MicroServer multiplex_protocol(
       &pool, &multi_transport,

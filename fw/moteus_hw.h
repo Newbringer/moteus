@@ -61,6 +61,9 @@ struct MoteusHwPins {
 
   float vsense_adc_scale = 0.0f;
 
+  PinName uart_tx = NC;
+  PinName uart_rx = NC;
+
   PinName as5047_cs = NC;
 
   PinName can_td = NC;
