@@ -174,7 +174,9 @@ g4_mbed_binary(
     deps = MOTEUS_DEPS,
     linker_script = "stm32g474.ld",
     features = ["speedopt"],
-    copts = COPTS,
+    copts = COPTS + [
+        "-DMOTEUS_USE_DEBUG_AS_AUX=1",
+    ],
 )
 
 genrule(
