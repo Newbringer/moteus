@@ -32,6 +32,7 @@
 #include "fw/firmware_info.h"
 #include "fw/git_info.h"
 #include "fw/millisecond_timer.h"
+#include "fw/aux_common.h"
 #include "fw/moteus_controller.h"
 #include "fw/moteus_hw.h"
 #include "fw/system_info.h"
@@ -200,7 +201,7 @@ int main(void) {
       BoardUart::Options options;
       options.tx = g_hw_pins.uart_tx;
       options.rx = g_hw_pins.uart_rx;
-      options.baud_rate = 1000000;
+      options.baud_rate = MOTEUS_UART_SERIAL_DEFAULT_BAUD_RATE;
       return options;
     }());
     uart_micro_server.emplace(&*uart_transport);

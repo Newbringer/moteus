@@ -424,8 +424,13 @@ aux::AuxHardwareConfig GetAux2HardwareConfig() {
     return aux::AuxHardwareConfig{
       {{
           //          ADC#  CHN    I2C      SPI      USART    TIMER
+#if MOTEUS_USE_DEBUG_AS_AUX
+          { 0, PC_10,  -1,   0,    I2C1,    nullptr, USART3,  nullptr },
+          { 1, PC_11,  -1,   0,    I2C1,    nullptr, USART3,  nullptr },
+#else
           { 0, PB_8,   -1,   0,    I2C1,    nullptr, USART3,  nullptr },
           { 1, PB_9,   -1,   0,    I2C1,    nullptr, USART3,  nullptr },
+#endif
           { 2, PC_14,  -1,   0,    nullptr, nullptr, nullptr, nullptr },
           { 3, PC_15,  -1,   0,    nullptr, nullptr, nullptr, nullptr },
           { -1, NC, },
@@ -488,6 +493,10 @@ class MoteusController::Impl : public multiplex::MicroServer::Server {
                    multiplex_protocol->MakeTunnel(3),
                    timer,
                    AuxPort::kNoDefaultSpi,
+#if MOTEUS_USE_DEBUG_AS_AUX
+                   g_measured_hw_family == 0 ?
+                   AuxPort::kDefaultUartSerial :
+#endif
                    (g_hw_pins.uart_tx == NC &&
                     g_measured_hw_family == 1) ?
                    AuxPort::kDefaultUartSerial : AuxPort::kDefaultUartDisabled,
